@@ -13,6 +13,7 @@ In order to do the latter, an authorised access token is needed.
 #### Prerequisite:
 Get a GitHub token from https://github.com/settings/tokens and **enable SSO** if
 the organisation so requires.
+
 ---
 
 Prepare the config file as described below, and run:
@@ -35,6 +36,7 @@ docker build -t godocset-create .
 #### Prerequisite:
 Get a GitHub token from https://github.com/settings/tokens and **enable SSO** if
 the organisation so requires.
+
 ---
 
 Configuration is provided as `toml` file, and looks like this:
