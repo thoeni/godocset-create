@@ -3,15 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
-	"sync"
-
 	"github.com/google/go-github/v24/github"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 	"golang.org/x/oauth2"
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing/transport/http"
+	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 func main() {
@@ -28,13 +28,11 @@ func main() {
 	}
 
 	githubToken := viper.GetString("Github.token")
-	organization := viper.GetString("Github.organization")
-	user := viper.GetString("Github.user")
+	githubUser := viper.GetString("Github.user_id")
+	cloneTargetDir := viper.GetString("Github.clone_target_dir")
+	organizations := viper.GetStringSlice("Docset.organizations")
+	users := viper.GetStringSlice("Docset.users")
 	filter := viper.GetStringSlice("Docset.filters")
-	fmt.Println(githubToken)
-	fmt.Println(organization)
-	fmt.Println(user)
-	fmt.Println(filter)
 
 	ctx := context.Background()
 	ts := oauth2.StaticTokenSource(
@@ -43,54 +41,64 @@ func main() {
 	tc := oauth2.NewClient(ctx, ts)
 	client := github.NewClient(tc)
 
-	org, _, err := client.Organizations.Get(ctx, organization)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	totalRepos := org.GetPublicRepos() + org.GetTotalPrivateRepos()
-	fmt.Println("Owned repos", totalRepos)
-	concurrency := totalRepos / perPage
-	if totalRepos-concurrency*perPage > 0 {
-		concurrency++
-	}
-
-	var wg sync.WaitGroup
-	goRepoMetadataCh := make(chan *github.Repository, totalRepos)
-	for i := 0; i < concurrency; i++ {
-		wg.Add(1)
-		go fetchGithubRepoMetadata(ctx, &wg, client, organization, filter, i+1, perPage, goRepoMetadataCh)
-	}
-
+	goRepoMetadataCh := make(chan *github.Repository, 2*maxConcurrentUpdates)
+	var cloneWg sync.WaitGroup
+	var count int32
 	go func() {
-		wg.Wait()
-		close(goRepoMetadataCh)
+		for r := range goRepoMetadataCh {
+			cloneWg.Add(1)
+			concurrentUpdateLimiter := make(chan struct{}, maxConcurrentUpdates)
+			fmt.Printf("Repo: %s\n", r.GetName())
+			fmt.Printf("CloneURL: %s\n", r.GetCloneURL())
+			fmt.Printf("Ready to clone...\n\n")
+			concurrentUpdateLimiter <- struct{}{}
+			go updateRepo(ctx, &cloneWg, concurrentUpdateLimiter, r.GetCloneURL(), cloneTargetDir, r.GetFullName(), githubToken, githubUser)
+			atomic.AddInt32(&count, 1)
+		}
 	}()
 
-	concurrentUpdateLimiter := make(chan struct{}, maxConcurrentUpdates)
-	var cloneWg sync.WaitGroup
-	var count int
-	for r := range goRepoMetadataCh {
-		fmt.Printf("Repo: %s\n", r.GetName())
-		fmt.Printf("CloneURL: %s\n", r.GetCloneURL())
-		fmt.Printf("Ready to clone...\n\n")
-		concurrentUpdateLimiter <- struct{}{}
-		cloneWg.Add(1)
-		go updateRepo(ctx, &cloneWg, concurrentUpdateLimiter, r.GetCloneURL(), r.GetName(), githubToken, organization)
-		count++
+	var githubRepoPagesWaitGroup sync.WaitGroup
+
+	repoListers := make([]Lister, 0, len(organizations)+len(users))
+	for _, org := range organizations {
+		repoListers = append(repoListers, OrganizationRepository{
+			name:    org,
+			perPage: perPage,
+		})
+	}
+	for _, user := range users {
+		repoListers = append(repoListers, UserRepository{
+			name:    user,
+			perPage: perPage,
+		})
 	}
 
+	for _, repoLister := range repoListers {
+		totalRepos := repoLister.Total(ctx, client)
+		fmt.Println("Owned repos", totalRepos)
+		concurrency := totalRepos / perPage
+		if totalRepos-concurrency*perPage > 0 {
+			concurrency++
+		}
+
+		for i := 0; i < concurrency; i++ {
+			githubRepoPagesWaitGroup.Add(1)
+			repoLister = repoLister.Next()
+			go fetchGithubRepoMetadata(ctx, &githubRepoPagesWaitGroup, client, repoLister, filter, goRepoMetadataCh)
+		}
+	}
+
+	githubRepoPagesWaitGroup.Wait()
+	close(goRepoMetadataCh)
 	cloneWg.Wait()
-	fmt.Printf("Fetched %d Go repositories.\n", count)
 }
 
-func updateRepo(ctx context.Context, wg *sync.WaitGroup, w <-chan struct{}, url, repoName, githubToken, organization string) {
-	defer wg.Done()
-	defer func(){
+func updateRepo(ctx context.Context, wg *sync.WaitGroup, w <-chan struct{}, url, cloneTargetDir, repoName, githubToken, githubUser string) {
+	defer func() {
+		wg.Done()
 		<-w
 	}()
-	repoPath := fmt.Sprintf("/go/src/github.com/%s/%s", organization, repoName)
+	repoPath := fmt.Sprintf("%s/src/github.com/%s", cloneTargetDir, repoName)
 	var r *git.Repository
 	// Attempt opening the repo
 	r, err := git.PlainOpen(repoPath)
@@ -101,7 +109,7 @@ func updateRepo(ctx context.Context, wg *sync.WaitGroup, w <-chan struct{}, url,
 			if _, err := git.PlainCloneContext(ctx, repoPath, false, &git.CloneOptions{
 				URL: url,
 				Auth: &http.BasicAuth{
-					Username: organization,
+					Username: githubUser,
 					Password: githubToken,
 				},
 			}); err != nil {
@@ -117,7 +125,7 @@ func updateRepo(ctx context.Context, wg *sync.WaitGroup, w <-chan struct{}, url,
 	if err := r.FetchContext(ctx, &git.FetchOptions{
 		RemoteName: "origin",
 		Auth: &http.BasicAuth{
-			Username: organization,
+			Username: githubUser,
 			Password: githubToken,
 		},
 	}); err != nil && err != git.NoErrAlreadyUpToDate {
@@ -125,22 +133,19 @@ func updateRepo(ctx context.Context, wg *sync.WaitGroup, w <-chan struct{}, url,
 	}
 }
 
-func fetchGithubRepoMetadata(ctx context.Context, wg *sync.WaitGroup, client *github.Client, organization string, filter []string, page, perPage int, r chan<- *github.Repository) {
-	defer wg.Done()
-	opt := &github.RepositoryListByOrgOptions{
-		Type: "all",
-		ListOptions: github.ListOptions{
-			Page:    page,
-			PerPage: perPage,
-		},
-	}
+type Lister interface {
+	List(ctx context.Context, client *github.Client) ([]*github.Repository, *github.Response, error)
+	Total(ctx context.Context, client *github.Client) int
+	Next() Lister
+}
 
-	repos, _, err := client.Repositories.ListByOrg(ctx, organization, opt)
+func fetchGithubRepoMetadata(ctx context.Context, wg *sync.WaitGroup, client *github.Client, l Lister, filter []string, r chan<- *github.Repository) {
+	defer wg.Done()
+	repos, _, err := l.List(ctx, client)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-
 	for i := range repos {
 		if repos[i].GetLanguage() == "Go" && matchFilter(repos[i].GetFullName(), filter) {
 			r <- repos[i]
