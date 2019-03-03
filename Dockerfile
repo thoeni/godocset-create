@@ -1,21 +1,14 @@
-FROM golang:latest AS repo-fetcher
+FROM golang:latest AS builder
 ARG GO111MODULE=on
-WORKDIR /go/src/github.com/deliveroo/godoc/
+WORKDIR /go/src/github.com/thoeni/godoc-create/
 COPY . .
 RUN go get ./... \
-	&& go build . \
-	&& go get github.com/wuudjac/godocdash
-
-FROM golang:latest AS deliveroo-repos
-ARG github_token
-ENV GITHUB_TOKEN=$github_token
-COPY --from=repo-fetcher /go/src/github.com/deliveroo/godoc/godoc .
-RUN ./godoc
+	&& go install . \
+	&& go get github.com/thoeni/godocdash
 
 FROM golang:latest
-ENV GOPATH=/go
-WORKDIR /go/src/github.com/deliveroo/
-COPY --from=deliveroo-repos /tmp/deliveroo .
-COPY --from=repo-fetcher /go/bin/godocdash .
-EXPOSE 8080
-CMD ["godoc", "-http=:8080"]
+COPY --from=builder /go/bin/godocdash /usr/local/bin/
+COPY --from=builder /go/bin/godoc-create /usr/local/bin/
+COPY run.sh .
+
+CMD ["sh run.sh"]
