@@ -43,16 +43,19 @@ func main() {
 
 	goRepoMetadataCh := make(chan *github.Repository, 2*maxConcurrentUpdates)
 	var cloneWg sync.WaitGroup
+	var repoUpdateWg sync.WaitGroup
 	var count int32
+	cloneWg.Add(1)
 	go func() {
+		defer cloneWg.Done()
 		for r := range goRepoMetadataCh {
-			cloneWg.Add(1)
 			concurrentUpdateLimiter := make(chan struct{}, maxConcurrentUpdates)
 			fmt.Printf("Repo: %s\n", r.GetName())
 			fmt.Printf("CloneURL: %s\n", r.GetCloneURL())
 			fmt.Printf("Ready to clone...\n\n")
 			concurrentUpdateLimiter <- struct{}{}
-			go updateRepo(ctx, &cloneWg, concurrentUpdateLimiter, r.GetCloneURL(), cloneTargetDir, r.GetFullName(), githubToken, githubUser)
+			repoUpdateWg.Add(1)
+			go updateRepo(ctx, &repoUpdateWg, concurrentUpdateLimiter, r.GetCloneURL(), cloneTargetDir, r.GetFullName(), githubToken, githubUser)
 			atomic.AddInt32(&count, 1)
 		}
 	}()
@@ -91,6 +94,7 @@ func main() {
 	githubRepoPagesWaitGroup.Wait()
 	close(goRepoMetadataCh)
 	cloneWg.Wait()
+	repoUpdateWg.Wait()
 }
 
 func updateRepo(ctx context.Context, wg *sync.WaitGroup, w <-chan struct{}, url, cloneTargetDir, repoName, githubToken, githubUser string) {
@@ -158,6 +162,12 @@ func matchFilter(keyword string, filter []string) bool {
 		return true
 	}
 	for _, f := range filter {
+		if strings.HasSuffix(f, "*") {
+			wildcard := strings.TrimSuffix(strings.TrimPrefix(f, "github.com/"), "*")
+			if strings.Contains(keyword, wildcard) {
+				return true
+			}
+		}
 		if strings.Contains(f, keyword) {
 			return true
 		}

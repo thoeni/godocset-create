@@ -1,2 +1,2 @@
 #!/bin/bash
-godoc-create && godocdash
+godocset-create && godocdash

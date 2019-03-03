@@ -1,4 +1,4 @@
-module godoc-create
+module godocset-create
 
 require (
 	github.com/BurntSushi/toml v0.3.1 // indirect
