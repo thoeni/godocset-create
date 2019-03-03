@@ -8,11 +8,21 @@ within an organisation.
 
 In order to do the latter, an authorised access token is needed.
 
-### Build:
+### TL;DR
 
 #### Prerequisite:
 Get a GitHub token from https://github.com/settings/tokens and **enable SSO** if
 the organisation so requires.
+---
+
+Prepare the config file as described below, and run:
+```
+docker run -v `pwd`:/tmp thoeni/godocset-create
+``` 
+
+### Build:
+
+Wanna build it yourself? Go ahead...
 
 To build the Docker image, run this and replace the value with your authorised
 token:
@@ -21,6 +31,11 @@ docker build -t godocset-create .
 ```
 
 ### Configure
+
+#### Prerequisite:
+Get a GitHub token from https://github.com/settings/tokens and **enable SSO** if
+the organisation so requires.
+---
 
 Configuration is provided as `toml` file, and looks like this:
 ```toml
