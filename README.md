@@ -1,7 +1,7 @@
 ## GoDocset Create
 
-GoDocset create allows can generate GoDoc Docset in the format required by
-offline doc tools like Dash.
+GoDocset create allows you to generate GoDoc Docset in the format required by
+offline doc tools such as Dash.
 
 Docs can be pulled down from Github both from public and private repositories
 within an organisation.
