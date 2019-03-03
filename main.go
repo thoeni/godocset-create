@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"strings"
 	"sync"
 
 	"github.com/google/go-github/v24/github"
 	"github.com/pkg/errors"
+	"github.com/spf13/viper"
 	"golang.org/x/oauth2"
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing/transport/http"
@@ -19,21 +19,31 @@ func main() {
 	const perPage = 100
 	const maxConcurrentUpdates = 10
 
-	githubToken := flag.String("githubToken", "", "personal access token allowed to pull repos")
-	organization := flag.String("organization", "deliveroo", "organization to pull docs form")
-	filter := flag.String("filter", "", "filter to specify a subset of the org repos to pull down (works in a 'contains' fashion)")
+	viper.SetConfigName("godocset-config")
+	viper.AddConfigPath("/tmp")
+	viper.AddConfigPath(".")
+	err := viper.ReadInConfig()
+	if err != nil {
+		panic(fmt.Errorf("Fatal error config file: %s \n", err))
+	}
 
-	flag.Parse()
-	fmt.Println("Using token=", *githubToken, " and org=", *organization)
+	githubToken := viper.GetString("Github.token")
+	organization := viper.GetString("Github.organization")
+	user := viper.GetString("Github.user")
+	filter := viper.GetStringSlice("Docset.filters")
+	fmt.Println(githubToken)
+	fmt.Println(organization)
+	fmt.Println(user)
+	fmt.Println(filter)
 
 	ctx := context.Background()
 	ts := oauth2.StaticTokenSource(
-		&oauth2.Token{AccessToken: *githubToken},
+		&oauth2.Token{AccessToken: githubToken},
 	)
 	tc := oauth2.NewClient(ctx, ts)
 	client := github.NewClient(tc)
 
-	org, _, err := client.Organizations.Get(ctx, *organization)
+	org, _, err := client.Organizations.Get(ctx, organization)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -50,7 +60,7 @@ func main() {
 	goRepoMetadataCh := make(chan *github.Repository, totalRepos)
 	for i := 0; i < concurrency; i++ {
 		wg.Add(1)
-		go fetchGithubRepoMetadata(ctx, &wg, client, *organization, *filter, i+1, perPage, goRepoMetadataCh)
+		go fetchGithubRepoMetadata(ctx, &wg, client, organization, filter, i+1, perPage, goRepoMetadataCh)
 	}
 
 	go func() {
@@ -67,7 +77,7 @@ func main() {
 		fmt.Printf("Ready to clone...\n\n")
 		concurrentUpdateLimiter <- struct{}{}
 		cloneWg.Add(1)
-		go updateRepo(ctx, &cloneWg, concurrentUpdateLimiter, r.GetCloneURL(), r.GetName(), *githubToken, *organization)
+		go updateRepo(ctx, &cloneWg, concurrentUpdateLimiter, r.GetCloneURL(), r.GetName(), githubToken, organization)
 		count++
 	}
 
@@ -115,7 +125,7 @@ func updateRepo(ctx context.Context, wg *sync.WaitGroup, w <-chan struct{}, url,
 	}
 }
 
-func fetchGithubRepoMetadata(ctx context.Context, wg *sync.WaitGroup, client *github.Client, organization, filter string, page, perPage int, r chan<- *github.Repository) {
+func fetchGithubRepoMetadata(ctx context.Context, wg *sync.WaitGroup, client *github.Client, organization string, filter []string, page, perPage int, r chan<- *github.Repository) {
 	defer wg.Done()
 	opt := &github.RepositoryListByOrgOptions{
 		Type: "all",
@@ -132,8 +142,20 @@ func fetchGithubRepoMetadata(ctx context.Context, wg *sync.WaitGroup, client *gi
 	}
 
 	for i := range repos {
-		if repos[i].GetLanguage() == "Go" && strings.Contains(repos[i].GetCloneURL(), filter) {
+		if repos[i].GetLanguage() == "Go" && matchFilter(repos[i].GetFullName(), filter) {
 			r <- repos[i]
 		}
 	}
+}
+
+func matchFilter(keyword string, filter []string) bool {
+	if len(filter) == 0 {
+		return true
+	}
+	for _, f := range filter {
+		if strings.Contains(f, keyword) {
+			return true
+		}
+	}
+	return false
 }

@@ -7,8 +7,10 @@ RUN go get ./... \
 	&& go get github.com/thoeni/godocdash
 
 FROM golang:latest
+ENV output=/tmp
+ENV GOPHAT=/go
 COPY --from=builder /go/bin/godocdash /usr/local/bin/
 COPY --from=builder /go/bin/godoc-create /usr/local/bin/
 COPY run.sh .
 
-CMD ["sh run.sh"]
+CMD ["/bin/bash","run.sh"]
